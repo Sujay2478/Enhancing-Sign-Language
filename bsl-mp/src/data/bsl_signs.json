@@ -1,0 +1,43 @@
+[
+  {
+    "id": "bsl_A",
+    "name": "BSL - A",
+    "type": "static",
+    "hands": "one",
+    "dominant": "right",
+    "targetPose": {
+      "angles": {
+        "R_INDEX_MCP": 35,
+        "R_INDEX_PIP": 70,
+        "R_INDEX_DIP": 45,
+        "R_THUMB_IP": 10
+      },
+      "toleranceDefault": 12
+    },
+    "weights": { "INDEX": 1.2, "THUMB": 1.0, "OTHERS": 0.8 },
+    "hints": ["Bend index at PIP more", "Relax the thumb"]
+  },
+  {
+    "id": "bsl_yes",
+    "name": "BSL - Yes",
+    "type": "dynamic",
+    "hands": "one",
+    "template": {
+      "length": 32,
+      "features": ["R_WRIST_Y", "R_INDEX_MCP", "R_MIDDLE_MCP"],
+      "sequence": [
+        [0.00, 30, 25],[0.03, 35, 30],[0.06, 40, 40],[0.09, 45, 50],
+        [0.12, 50, 60],[0.15, 55, 65],[0.18, 60, 70],[0.21, 65, 75],
+        [0.24, 70, 75],[0.27, 65, 70],[0.30, 60, 65],[0.33, 55, 60],
+        [0.36, 50, 55],[0.39, 45, 50],[0.42, 40, 45],[0.45, 35, 40],
+        [0.48, 30, 35],[0.51, 25, 30],[0.54, 20, 25],[0.57, 15, 20],
+        [0.60, 10, 15],[0.63, 12, 12],[0.66, 14, 10],[0.69, 12, 12],
+        [0.72, 10, 14],[0.75, 12, 12],[0.78, 14, 10],[0.81, 12, 12],
+        [0.84, 10, 14],[0.87, 12, 12],[0.90, 14, 10],[0.93, 12, 12]
+      ]
+    },
+    "checkpoints": [8, 16, 24],
+    "tolerance": { "dtw": 0.22 },
+    "hints": ["Use a gentle nod motion", "Keep fingers relaxed"]
+  }
+]
