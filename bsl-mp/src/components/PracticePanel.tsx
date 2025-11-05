@@ -71,7 +71,7 @@ export default function PracticePanel() {
         ort.env.wasm.simd = true;
         ort.env.wasm.useDynamicImport = false;
 
-        const modelURL = import.meta.env.BASE_URL + "models/bsl_sign_model.ort";
+        const modelURL = import.meta.env.BASE_URL + "models/bsl_sign_model.onnx";
 
         const session = await ort.InferenceSession.create(modelURL, {
           executionProviders: ["wasm"],

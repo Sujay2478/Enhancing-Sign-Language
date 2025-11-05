@@ -53,7 +53,6 @@ class BSLSignedDataset(Dataset):
     def __getitem__(self, idx):
         return self.X[idx], self.y[idx]
 
-
 dataset = BSLSignedDataset(X, y)
 train_size = int(0.8 * len(dataset))
 val_size = len(dataset) - train_size
@@ -80,7 +79,6 @@ class BSLNet(nn.Module):
     def forward(self, x):
         return self.net(x)
 
-
 model = BSLNet(input_dim=X.shape[1], num_classes=num_classes).to(DEVICE)
 print(model)
 
@@ -89,7 +87,6 @@ print(model)
 # ============================================================
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=LR)
-
 
 def train_epoch(model, loader, optimizer, criterion):
     model.train()
@@ -106,7 +103,6 @@ def train_epoch(model, loader, optimizer, criterion):
         correct += (preds == yb).sum().item()
     return total_loss / len(loader.dataset), correct / len(loader.dataset)
 
-
 def evaluate(model, loader, criterion):
     model.eval()
     total_loss, correct = 0, 0
@@ -119,7 +115,6 @@ def evaluate(model, loader, criterion):
             preds = outputs.argmax(1)
             correct += (preds == yb).sum().item()
     return total_loss / len(loader.dataset), correct / len(loader.dataset)
-
 
 for epoch in range(EPOCHS):
     train_loss, train_acc = train_epoch(model, train_loader, optimizer, criterion)
@@ -140,43 +135,45 @@ print("✅ Model saved to models/bsl_sign_model.pth")
 # EXPORT TO ONNX (browser-safe)
 # ============================================================
 try:
-    print("🔧 Starting ONNX export (web-safe)...")
+    print("🔧 Starting ONNX export (external path for browser)...")
+
+    import onnx
+    from torch.autograd import Variable
 
     model_cpu = model.to("cpu").eval()
-    dummy_input = torch.randn(1, X.shape[1], dtype=torch.float32)
-    print("Dummy input shape:", dummy_input.shape)
-    with torch.no_grad():
-        print("Model output shape:", model_cpu(dummy_input).shape)
+    dummy_input = Variable(torch.randn(1, X.shape[1], dtype=torch.float32))
 
-    # Ensure clean export path
     onnx_path = os.path.abspath(os.path.join(
         os.path.dirname(__file__),
-        "../../public/models/bsl_sign_model.ort"
+        "../../public/models/bsl_sign_model.onnx"
     ))
     os.makedirs(os.path.dirname(onnx_path), exist_ok=True)
 
-    # Remove any stale .ort.data file if present
     if os.path.exists(onnx_path + ".data"):
         os.remove(onnx_path + ".data")
 
-    # ✅ Export using ONNX opset 14 and named tensors
+    # ✅ Force export through the standard torch.onnx interface but save IR9
     torch.onnx.export(
         model_cpu,
-        (dummy_input,),
+        dummy_input,
         onnx_path,
         export_params=True,
-        opset_version=14,
+        opset_version=17,            # most web-compatible opset
         do_constant_folding=True,
         input_names=["input"],
         output_names=["output"],
-        dynamic_axes=None,
-        verbose=False
+        dynamic_axes=None
     )
 
+    # ✅ Downgrade IR version to v9 for onnxruntime-web
+    model_proto = onnx.load(onnx_path)
+    model_proto.ir_version = 9
+    onnx.save(model_proto, onnx_path)
+
     file_size = os.path.getsize(onnx_path)
-    print(f"✅ ONNX model exported successfully to {onnx_path}")
+    print(f"✅ Browser-safe ONNX export succeeded: {onnx_path}")
     print(f"📦 File size: {file_size / 1024:.2f} KB")
-    print("✅ Web-safe ONNX export complete — ready for onnxruntime-web!")
+    print("✅ Ready for onnxruntime-web!")
 
 except Exception:
     print("❌ ONNX export failed:")
