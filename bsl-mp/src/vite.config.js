@@ -4,14 +4,14 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
   plugins: [react()],
   optimizeDeps: {
-    exclude: ["onnxruntime-web"], // prevent bundling ONNXRuntime
+    exclude: ["onnxruntime-web"],
   },
   assetsInclude: ["**/*.wasm", "**/*.mjs"],
   server: {
     watch: { usePolling: true },
     hmr: { overlay: false },
     fs: {
-      strict: false, // allow reading from /public without rewriting imports
+      strict: false,
     },
     mimeTypes: {
       "application/javascript": ["mjs"],

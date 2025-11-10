@@ -1,14 +1,14 @@
 import os
-import pandas as pd
+import json
+import traceback
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.onnx
 from torch.utils.data import Dataset, DataLoader, random_split
 from sklearn.preprocessing import LabelEncoder
-from sklearn.metrics import accuracy_score
-import traceback
-import torch.onnx
 
 # ============================================================
 # CONFIGURATION
@@ -29,7 +29,7 @@ df.columns = [f"f{i}" for i in range(df.shape[1] - 1)] + ["label"]
 print("Data shape:", df.shape)
 print("Columns:", df.columns.tolist()[:5], "...", df.columns.tolist()[-5:])
 
-# Separate features and labels
+
 X = df.drop(columns=["label"]).values.astype(np.float32)
 y = df["label"].values
 
@@ -52,6 +52,7 @@ class BSLSignedDataset(Dataset):
 
     def __getitem__(self, idx):
         return self.X[idx], self.y[idx]
+
 
 dataset = BSLSignedDataset(X, y)
 train_size = int(0.8 * len(dataset))
@@ -79,6 +80,7 @@ class BSLNet(nn.Module):
     def forward(self, x):
         return self.net(x)
 
+
 model = BSLNet(input_dim=X.shape[1], num_classes=num_classes).to(DEVICE)
 print(model)
 
@@ -87,6 +89,7 @@ print(model)
 # ============================================================
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=LR)
+
 
 def train_epoch(model, loader, optimizer, criterion):
     model.train()
@@ -103,6 +106,7 @@ def train_epoch(model, loader, optimizer, criterion):
         correct += (preds == yb).sum().item()
     return total_loss / len(loader.dataset), correct / len(loader.dataset)
 
+
 def evaluate(model, loader, criterion):
     model.eval()
     total_loss, correct = 0, 0
@@ -115,6 +119,7 @@ def evaluate(model, loader, criterion):
             preds = outputs.argmax(1)
             correct += (preds == yb).sum().item()
     return total_loss / len(loader.dataset), correct / len(loader.dataset)
+
 
 for epoch in range(EPOCHS):
     train_loss, train_acc = train_epoch(model, train_loader, optimizer, criterion)
@@ -134,6 +139,15 @@ print("✅ Model saved to models/bsl_sign_model.pth")
 # ============================================================
 # EXPORT TO ONNX (browser-safe)
 # ============================================================
+
+labels_path = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "data", "bsl_labels.json")
+)
+os.makedirs(os.path.dirname(labels_path), exist_ok=True)
+with open(labels_path, "w", encoding="utf-8") as f:
+    json.dump(encoder.classes_.tolist(), f, ensure_ascii=False, indent=2)
+print(f"✅ Label map saved to {labels_path}")
+
 try:
     print("🔧 Starting ONNX export (external path for browser)...")
 
@@ -152,29 +166,27 @@ try:
     if os.path.exists(onnx_path + ".data"):
         os.remove(onnx_path + ".data")
 
-    # ✅ Force export through the standard torch.onnx interface but save IR9
     torch.onnx.export(
         model_cpu,
         dummy_input,
         onnx_path,
         export_params=True,
-        opset_version=17,            # most web-compatible opset
+        opset_version=17,
         do_constant_folding=True,
         input_names=["input"],
         output_names=["output"],
         dynamic_axes=None
     )
 
-    # ✅ Downgrade IR version to v9 for onnxruntime-web
     model_proto = onnx.load(onnx_path)
     model_proto.ir_version = 9
     onnx.save(model_proto, onnx_path)
 
     file_size = os.path.getsize(onnx_path)
-    print(f"✅ Browser-safe ONNX export succeeded: {onnx_path}")
-    print(f"📦 File size: {file_size / 1024:.2f} KB")
-    print("✅ Ready for onnxruntime-web!")
+    print(f"Browser-safe ONNX export succeeded: {onnx_path}")
+    print(f"File size: {file_size / 1024:.2f} KB")
+    print("Ready for onnxruntime-web!")
 
 except Exception:
-    print("❌ ONNX export failed:")
+    print("ONNX export failed:")
     traceback.print_exc()

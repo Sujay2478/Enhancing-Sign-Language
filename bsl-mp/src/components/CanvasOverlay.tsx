@@ -3,9 +3,9 @@ import type { Landmarks } from "../logic/types";
 
 function drawSkeleton(ctx: CanvasRenderingContext2D, px: Landmarks) {
   const lines: [number, number][][] = [
-    [[0,1],[1,2],[2,3],[3,4]],       // thumb-ish
-    [[0,5],[5,6],[6,7],[7,8]],       // index
-    [[0,9],[9,10],[10,11],[11,12]],  // middle
+    [[0,1],[1,2],[2,3],[3,4]],
+    [[0,5],[5,6],[6,7],[7,8]],
+    [[0,9],[9,10],[10,11],[11,12]],
     [[0,13],[13,14],[14,15],[15,16]],
     [[0,17],[17,18],[18,19],[19,20]],
   ];

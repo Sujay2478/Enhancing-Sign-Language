@@ -8,11 +8,9 @@ import { computeAngles } from "../logic/angles";
 import { poseScore, dtwCost, dtwScore } from "../logic/scoring";
 import { viewGate } from "../logic/viewGate";
 import signs from "../data/bsl_signs.json";
+import labels from "../data/bsl_labels.json";
 import type { Landmarks } from "../logic/types";
 
-/* -------------------------------------------------------------------------- */
-/*                               Custom Types                                 */
-/* -------------------------------------------------------------------------- */
 interface TargetPose {
   angles: Record<string, number>;
   toleranceDefault?: number;
@@ -28,14 +26,11 @@ interface SignType {
   tolerance?: { dtw?: number };
 }
 
-/* -------------------------------------------------------------------------- */
-/*                               Main Component                               */
-/* -------------------------------------------------------------------------- */
 export default function PracticePanel() {
   const [video, setVideo] = useState<HTMLVideoElement | null>(null);
   const trackerRef = useRef<HandTracker>();
   const [handsPx, setHandsPx] = useState<Landmarks[]>([]);
-  const [score, setScore] = useState<number>(0);
+  const [score, setScore] = useState<number>(0); // shown as "Confidence" for static
   const [advice, setAdvice] = useState<string>("");
   const [selectedId, setSelectedId] = useState<string>(signs[0].id);
   const [mirror, setMirror] = useState(true);
@@ -49,73 +44,80 @@ export default function PracticePanel() {
   const windowRef = useRef<number[][]>([]);
   const [seqScore, setSeqScore] = useState<number | null>(null);
 
-  /* ---------------------------- ONNX Model State --------------------------- */
+  // ---------------- ONNX runtime setup ----------------
   const [session, setSession] = useState<ort.InferenceSession | null>(null);
-  const labelMap = useRef<string[]>([
-    "A","B","C","D","E","F","G","H","I","J",
-    "K","L","M","N","O","P","Q","R","S","T",
-    "U","V","W","X","Y","Z",
-    "0","1","2","3","4","5","6","7","8","9"
-  ]);
 
-  /* ---------------------------- Load ONNX Model ---------------------------- */
+  // Label map is now synced to training via JSON
+  const labelMap = useRef<string[]>(labels as string[]);
+
   useEffect(() => {
     async function loadModel(): Promise<void> {
       try {
         console.log("🔄 Loading ONNX model...");
 
-        // ✅ Ensure correct path for ONNX wasm files
+        // WASM runtime configuration (paths must match your public/ort folder)
         ort.env.wasm.wasmPaths = window.location.origin + "/ort/";
         ort.env.wasm.numThreads = 1;
         ort.env.wasm.proxy = false;
         ort.env.wasm.simd = true;
         ort.env.wasm.useDynamicImport = false;
 
+        // Model served from public/models/
         const modelURL = import.meta.env.BASE_URL + "models/bsl_sign_model.onnx";
 
-        const session = await ort.InferenceSession.create(modelURL, {
+        const sess = await ort.InferenceSession.create(modelURL, {
           executionProviders: ["wasm"],
         });
 
-        setSession(session);
+        setSession(sess);
         console.log("✅ ONNX model loaded successfully!");
-      } catch (err: any) {
-        console.error("❌ Failed to load ONNX model:", err);
+      } catch (err) {
+        console.error("Failed to load ONNX model:", err);
       }
     }
 
     void loadModel();
   }, []);
 
-  /* ----------------------------- Run Inference ----------------------------- */
+  // ---------------- Inference (with softmax) ----------------
   const runInference = useCallback(
     async (landmarks: number[]): Promise<void> => {
       if (!session || landmarks.length !== 63) return;
 
       try {
-        const inputTensor = new ort.Tensor<Float32Array>("float32", new Float32Array(landmarks), [1, 63]);
-        const results: Record<string, ort.Tensor> = await session.run({ input: inputTensor });
+        const inputTensor = new ort.Tensor("float32", new Float32Array(landmarks), [1, 63]);
+        const results = await session.run({ input: inputTensor });
+
+        // Assume single output
         const outputTensor = Object.values(results)[0] as ort.Tensor;
-        const scores = Array.from(outputTensor.data as Float32Array);
+        const logits = Array.from(outputTensor.data as Float32Array);
 
-        const maxScore = Math.max(...scores);
-        const maxIdx = scores.indexOf(maxScore);
-        const label = labelMap.current[maxIdx] || "Unknown";
+        if (!logits.length) return;
 
-        // ✅ Update UI label and score directly from model confidence
-        setPrediction(`${label}`);
-        setScore(Math.round(maxScore * 100)); // model confidence as % score
+        // Softmax for stable probabilities
+        const maxLogit = Math.max(...logits);
+        const exp = logits.map((v) => Math.exp(v - maxLogit));
+        const sumExp = exp.reduce((a, b) => a + b, 0);
+        const probs = exp.map((v) => v / sumExp);
+
+        const maxProb = Math.max(...probs);
+        const maxIdx = probs.indexOf(maxProb);
+
+        const label = labelMap.current[maxIdx] ?? "Unknown";
+
+        setPrediction(label);
+        setScore(Math.round(maxProb * 100)); // 0–100%
       } catch (err) {
-        console.error("❌ Inference error:", err);
+        console.error("Inference error:", err);
       }
     },
     [session]
   );
 
-
-  /* ------------------------ MediaPipe Hand Tracking ------------------------ */
+  // ---------------- MediaPipe + scoring ----------------
   useEffect(() => {
     if (!video) return;
+
     const ht = new HandTracker();
     trackerRef.current = ht;
 
@@ -126,6 +128,8 @@ export default function PracticePanel() {
           if (!hands.length) {
             setHandsPx([]);
             setAdvice("Show your hand to the camera");
+            setPrediction("");
+            setScore(0);
             return;
           }
 
@@ -136,14 +140,18 @@ export default function PracticePanel() {
           if (!gate.ok) {
             setAdvice(gate.advice!);
             setScore(0);
+            setPrediction("");
             return;
           }
           setAdvice("");
 
           const norm = normalize(px, { mirror });
           const landmarks = norm.flatMap((p) => [p[0], p[1], p[2]]);
+
+          // Run ONNX classifier
           void runInference(landmarks);
 
+          // Existing pose / DTW scoring logic
           if (current.type === "static") {
             const ang = computeAngles(norm);
             const target = current.targetPose?.angles ?? {};
@@ -153,7 +161,8 @@ export default function PracticePanel() {
               current.weights ?? {},
               current.targetPose?.toleranceDefault ?? 12
             );
-            setScore(s.score);
+            // If you want the ONNX score only, comment the next line:
+            // setScore(s.score);
           } else {
             const ang = computeAngles(norm);
             const row = [norm[0][1], ang.R_INDEX_MCP ?? 0, ang.R_MIDDLE_MCP ?? 0];
@@ -169,7 +178,7 @@ export default function PracticePanel() {
     return () => trackerRef.current?.stop();
   }, [video, mirror, current, runInference]);
 
-  /* -------------------------- Dynamic Key Scoring -------------------------- */
+  // Dynamic sequence scoring (unchanged)
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (current.type !== "dynamic") return;
@@ -190,7 +199,7 @@ export default function PracticePanel() {
     return () => window.removeEventListener("keydown", onKey);
   }, [current]);
 
-  /* ------------------------------- UI Render ------------------------------- */
+  // ---------------- UI ----------------
   return (
     <div style={{ display: "grid", gap: 8 }}>
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
@@ -239,9 +248,6 @@ export default function PracticePanel() {
   );
 }
 
-/* -------------------------------------------------------------------------- */
-/*                                Helper Utils                                */
-/* -------------------------------------------------------------------------- */
 function resample(seq: number[][], len: number): number[][] {
   const out: number[][] = [];
   for (let i = 0; i < len; i++) {

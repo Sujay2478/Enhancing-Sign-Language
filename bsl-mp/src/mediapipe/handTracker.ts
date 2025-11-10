@@ -1,4 +1,3 @@
-// Live hand landmarks via MediaPipe Tasks Vision
 import {
   FilesetResolver,
   HandLandmarker
@@ -6,7 +5,6 @@ import {
 
 
 export type HandResult = {
-  // Each landmark is [x,y,z] normalized to video size by MediaPipe (0..1)
   landmarks: [number, number, number][];
   handedness: "Left" | "Right";
   score: number; // confidence
