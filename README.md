@@ -1,4 +1,4 @@
-# Enhancing Sign Language Learning with MediaPipe & Deep Learning
+## Enhancing Sign Language Learning with MediaPipe & Deep Learning
 
 An end-to-end web-based system for real-time British Sign Language (BSL) recognition using MediaPipe hand tracking and a deep learning classifier deployed in the browser with ONNX Runtime.
 
@@ -12,14 +12,14 @@ This project supports:
 
 ---
 
-## Features
+### Features
 
-### 1. Real-Time Hand Tracking
+#### 1. Real-Time Hand Tracking
 - Uses **MediaPipe Hands** for 3D landmark extraction.
 - Detects left and right hands independently.
 - Supports both **one-hand** and **two-hand** signs.
 
-### 2. Deep Learning Sign Classifier
+#### 2. Deep Learning Sign Classifier
 - Trained in **PyTorch**
 - Exported to **ONNX**
 - Runs fully in browser via **onnxruntime-web**
@@ -28,15 +28,15 @@ This project supports:
   - 126 features (two hands concatenated)
 - Output: Softmax probabilities over BSL alphabet & numbers.
 
-### 3. Feature Normalisation
+#### 3. Feature Normalisation
 - Z-score normalisation using training statistics (`bsl_norm.json`)
 - Ensures inference distribution matches training distribution.
 
-### 4. Dynamic Gesture Recognition
+#### 4. Dynamic Gesture Recognition
 - Sequence matching using **Dynamic Time Warping (DTW)**
 - Used for gestures like "Yes", "No", etc.
 
-### 5. Visual Feedback
+#### 5. Visual Feedback
 - Live skeleton overlay
 - Confidence percentage
 - Correct / Incorrect indicator
