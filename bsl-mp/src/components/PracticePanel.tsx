@@ -405,8 +405,7 @@ export default function PracticePanel() {
         <b style={{ color: "#0077cc" }}>{prediction ? `Pred: ${prediction}` : ""}</b>
 
         {current.type === "static" && prediction && expectedKey && (
-          <b style={{ color: isCorrect ? "#18a34a" : "#dc2626" }}>
-          </b>
+          <b style={{ color: isCorrect ? "#18a34a" : "#dc2626" }}></b>
         )}
       </div>
 
