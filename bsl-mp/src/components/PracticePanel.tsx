@@ -2,14 +2,30 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as ort from "onnxruntime-web";
 import CameraFeed from "./CameraFeed";
 import CanvasOverlay from "./CanvasOverlay";
+import SentenceBuilder from "./SentenceBuilder";
+
 import { HandTracker } from "../mediapipe/handTracker";
 import { toPixels, normalize } from "../logic/normalize";
 import { computeAngles } from "../logic/angles";
 import { poseScore, dtwCost, dtwScore } from "../logic/scoring";
 import { viewGate } from "../logic/viewGate";
+
 import signs from "../data/bsl_signs.json";
 import labels from "../data/bsl_labels.json";
-import normStats from "../data/bsl_norm.json"; // mean/std from training
+import normStats from "../data/bsl_norm.json";
+import vocab from "../data/bsl_vocab.json";
+
+import {
+  createDecoderState,
+  commitChar,
+  commitSpace,
+  backspace as decoderBackspace,
+  clearAll as decoderClearAll,
+  commitSuggestion,
+  suggestionsFor,
+  type DecoderState,
+} from "../logic/sentenceDecoder";
+
 import type { Landmarks } from "../logic/types";
 
 interface TargetPose {
@@ -43,7 +59,6 @@ function zeros(n: number): number[] {
   return new Array(n).fill(0);
 }
 
-// Flatten Landmarks -> 63 floats
 function flatten63(lms: Landmarks): number[] {
   const out = new Array(63);
   let k = 0;
@@ -56,7 +71,6 @@ function flatten63(lms: Landmarks): number[] {
   return out;
 }
 
-// Mirror raw MediaPipe normalized landmarks (x in [0..1]) if user toggles mirror view
 function maybeMirrorRaw(lms: Landmarks, mirror: boolean): Landmarks {
   if (!mirror) return lms;
   return lms.map(([x, y, z]) => [1 - x, y, z]) as Landmarks;
@@ -69,7 +83,7 @@ function zscore(features: number[], stats: NormStats): number[] {
 
   if (mean.length !== features.length || std.length !== features.length) {
     console.warn(
-      `⚠️ Norm stats length mismatch: features=${features.length}, mean=${mean.length}, std=${std.length}. Using raw features.`
+      `⚠️ Norm stats mismatch: features=${features.length}, mean=${mean.length}, std=${std.length}. Using raw.`
     );
     return features;
   }
@@ -82,55 +96,77 @@ function zscore(features: number[], stats: NormStats): number[] {
   return out;
 }
 
-function softmax(logits: number[]): number[] {
-  const maxLogit = Math.max(...logits);
-  const exps = logits.map((v) => Math.exp(v - maxLogit));
+function softmax(x: number[]): number[] {
+  const m = Math.max(...x);
+  const exps = x.map((v) => Math.exp(v - m));
   const sum = exps.reduce((a, b) => a + b, 0) || 1;
   return exps.map((v) => v / sum);
 }
 
 /**
- * Canonical key for labels:
- * "C - c" -> "c"
- * "Ten - 10" -> "10"
- * fallback -> lowercase trimmed
+ * If the output already looks like probabilities (all >=0 and sum ~ 1),
+ * don’t softmax again.
  */
-function labelKey(lbl: string): string {
-  const parts = lbl.split("-");
-  if (parts.length >= 2) return parts[1].trim().toLowerCase();
-  return lbl.trim().toLowerCase();
+function toProbabilities(output: number[]): number[] {
+  if (!output.length) return output;
+
+  let min = Infinity;
+  let max = -Infinity;
+  let sum = 0;
+  for (const v of output) {
+    if (v < min) min = v;
+    if (v > max) max = v;
+    sum += v;
+  }
+
+  const looksLikeProbs = min >= 0 && max <= 1.0 + 1e-3 && Math.abs(sum - 1) < 1e-2;
+  return looksLikeProbs ? output : softmax(output);
 }
 
 /**
- * Expected key from sign name:
- * "BSL - A" -> "a"
- * "BSL - 10" -> "10"
- * otherwise null
+ * "C - c" -> "c"
+ * "Ten - 10" -> "10"
  */
-function expectedKeyFromSign(current: SignType): string | null {
-  const name = current.name ?? "";
-
-  const letter = name.match(/([A-Za-z])\s*$/);
-  if (letter?.[1]) return letter[1].toLowerCase();
-
-  const num = name.match(/(\d+)\s*$/);
-  if (num?.[1]) return num[1];
-
+function labelToToken(lbl: string): string | null {
+  const parts = lbl.split("-").map((s) => s.trim());
+  if (parts.length >= 2) {
+    const rhs = parts[1];
+    if (/^[a-z]$/i.test(rhs)) return rhs.toLowerCase();
+    if (/^\d+$/.test(rhs)) return rhs;
+  }
   return null;
+}
+
+function majorityVote(items: string[]): { label: string; frac: number } | null {
+  if (!items.length) return null;
+  const counts = new Map<string, number>();
+  for (const s of items) counts.set(s, (counts.get(s) ?? 0) + 1);
+
+  let best = items[0];
+  let bestC = 0;
+  for (const [k, v] of counts.entries()) {
+    if (v > bestC) {
+      best = k;
+      bestC = v;
+    }
+  }
+  return { label: best, frac: bestC / items.length };
 }
 
 export default function PracticePanel() {
   const [video, setVideo] = useState<HTMLVideoElement | null>(null);
   const trackerRef = useRef<HandTracker>();
 
-  // overlay can draw 0/1/2 hands
   const [handsPx, setHandsPx] = useState<Landmarks[]>([]);
 
-  const [score, setScore] = useState<number>(0);
   const [advice, setAdvice] = useState<string>("");
   const [selectedId, setSelectedId] = useState<string>((signs as any)[0].id);
   const [mirror, setMirror] = useState(true);
+
   const [prediction, setPrediction] = useState<string>("");
+  const [confidence, setConfidence] = useState<number>(0);
+
+  const [decoder, setDecoder] = useState<DecoderState>(() => createDecoderState());
 
   const current: SignType = useMemo(
     () => (signs as any).find((s: SignType) => s.id === selectedId)!,
@@ -142,9 +178,20 @@ export default function PracticePanel() {
 
   const [session, setSession] = useState<ort.InferenceSession | null>(null);
   const labelMap = useRef<string[]>(labels as string[]);
-
-  // we expect 126 for two-hand model, but read from ONNX to be safe
   const expectedFeatureDim = useRef<number>(126);
+
+  // Stabilisation
+  const predWindowRef = useRef<string[]>([]);
+  const stableLabelRef = useRef<string>("");
+  const stableSinceRef = useRef<number>(0);
+  const lastCommitAtRef = useRef<number>(0);
+
+  // Tunables
+  const CONF_THRESH = 55;
+  const VOTE_WINDOW = 10;
+  const VOTE_FRAC = 0.75;
+  const HOLD_MS = 550;
+  const COOLDOWN_MS = 700;
 
   useEffect(() => {
     async function loadModel(): Promise<void> {
@@ -169,10 +216,11 @@ export default function PracticePanel() {
         const parsed = safeNumberDim(last);
         expectedFeatureDim.current = parsed ?? expectedFeatureDim.current;
 
-        console.log("✅ ONNX model loaded.", {
+        console.log("✅ ONNX loaded:", {
           inputName: inName,
           dims,
           expectedFeatureDim: expectedFeatureDim.current,
+          outputs: sess.outputNames,
         });
 
         setSession(sess);
@@ -185,48 +233,65 @@ export default function PracticePanel() {
   }, []);
 
   const runInference = useCallback(
-    async (rawFeatures: number[]): Promise<void> => {
-      if (!session) return;
+    async (rawFeatures: number[]): Promise<{ label: string; conf: number } | null> => {
+      if (!session) return null;
+      if (rawFeatures.length !== expectedFeatureDim.current) return null;
 
-      if (rawFeatures.length !== expectedFeatureDim.current) {
-        console.warn(
-          `⚠️ Feature length mismatch: got=${rawFeatures.length}, expected=${expectedFeatureDim.current}`
-        );
-        return;
+      const features = zscore(rawFeatures, normStats as NormStats);
+
+      const inputName = session.inputNames[0];
+      const inputTensor = new ort.Tensor("float32", new Float32Array(features), [
+        1,
+        features.length,
+      ]);
+
+      const results = await session.run({ [inputName]: inputTensor });
+
+      // Prefer first outputName explicitly
+      const outName = session.outputNames[0];
+      const outTensor = (results[outName] ?? Object.values(results)[0]) as ort.Tensor;
+
+      const rawOut = Array.from(outTensor.data as Float32Array);
+      if (!rawOut.length) return null;
+
+      const probs = toProbabilities(rawOut);
+
+      let maxProb = -1;
+      let maxIdx = -1;
+      for (let i = 0; i < probs.length; i++) {
+        if (probs[i] > maxProb) {
+          maxProb = probs[i];
+          maxIdx = i;
+        }
       }
 
-      try {
-        // apply same z-score normalization used in training
-        const features = zscore(rawFeatures, normStats as NormStats);
+      const label = labelMap.current[maxIdx] ?? "Unknown";
+      const conf = Math.round(maxProb * 100);
 
-        const inputName = session.inputNames[0];
-        const inputTensor = new ort.Tensor(
-          "float32",
-          new Float32Array(features),
-          [1, features.length]
-        );
-
-        const results = await session.run({ [inputName]: inputTensor });
-        const outputTensor = Object.values(results)[0] as ort.Tensor;
-        const logits = Array.from(outputTensor.data as Float32Array);
-        if (!logits.length) return;
-
-        const probs = softmax(logits);
-        const maxProb = Math.max(...probs);
-        const maxIdx = probs.indexOf(maxProb);
-
-        const label = labelMap.current[maxIdx] ?? "Unknown";
-        setPrediction(label);
-
-        // keep as integer percent, but don’t force 100 unless it truly is ~1.0
-        setScore(Math.round(maxProb * 100));
-      } catch (err) {
-        console.error("❌ Inference error:", err);
-      }
+      return { label, conf };
     },
     [session]
   );
 
+  // Decoder actions
+  const doCommitSpace = useCallback(() => setDecoder((s) => commitSpace(s)), []);
+  const doBackspace = useCallback(() => setDecoder((s) => decoderBackspace(s)), []);
+  const doClear = useCallback(() => setDecoder(decoderClearAll()), []);
+  const doPickSuggestion = useCallback((w: string) => {
+    setDecoder((s) => commitSuggestion(s, w));
+  }, []);
+
+  // Keyboard helpers (sentence building)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.code === "Backspace") doBackspace();
+      if (e.code === "Space" && current.type === "static") doCommitSpace();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [doBackspace, doCommitSpace, current.type]);
+
+  // MediaPipe loop
   useEffect(() => {
     if (!video) return;
 
@@ -236,24 +301,23 @@ export default function PracticePanel() {
     (async () => {
       await ht.init({
         videoEl: video,
-        onResults: ({ hands, videoEl }) => {
+        onResults: async ({ hands, videoEl }) => {
           if (!hands.length) {
             setHandsPx([]);
             setAdvice("Show your hand(s) to the camera");
             setPrediction("");
-            setScore(0);
+            setConfidence(0);
+            predWindowRef.current = [];
+            stableLabelRef.current = "";
             return;
           }
 
-          // stable left/right selection from MediaPipe handedness
           const left = hands.find((h) => h.handedness === "Left") ?? null;
           const right = hands.find((h) => h.handedness === "Right") ?? null;
 
-          // raw normalized landmarks (0..1-ish) for the MODEL
           const leftRaw = left ? (left.landmarks as Landmarks) : null;
           const rightRaw = right ? (right.landmarks as Landmarks) : null;
 
-          // pixels for overlay + gating ONLY
           const leftPx = leftRaw ? toPixels(leftRaw, videoEl) : null;
           const rightPx = rightRaw ? toPixels(rightRaw, videoEl) : null;
 
@@ -262,52 +326,76 @@ export default function PracticePanel() {
           if (rightPx) overlayHands.push(rightPx);
           setHandsPx(overlayHands);
 
-          // require at least one good hand in view
           const gate =
-            (rightPx && viewGate(rightPx, videoEl)) ||
-            (leftPx && viewGate(leftPx, videoEl));
+            (rightPx && viewGate(rightPx, videoEl)) || (leftPx && viewGate(leftPx, videoEl));
 
           if (!gate || !gate.ok) {
             setAdvice(gate?.advice ?? "Adjust hands into view");
             setPrediction("");
-            setScore(0);
+            setConfidence(0);
+            predWindowRef.current = [];
+            stableLabelRef.current = "";
             return;
           }
           setAdvice("");
 
-          // ✅ Build model features to match CSV format:
-          // two-hand => 126 floats [Left(63), Right(63)] with zero-padding
-          // one-hand => 63 floats from dominant/best hand
+          // Build feature vector (matches your CSV style: raw 0..1 landmarks)
           let rawFeatures: number[] = [];
-
           if (expectedFeatureDim.current === 126) {
             const L = leftRaw ? flatten63(maybeMirrorRaw(leftRaw, mirror)) : zeros(63);
             const R = rightRaw ? flatten63(maybeMirrorRaw(rightRaw, mirror)) : zeros(63);
             rawFeatures = [...L, ...R];
           } else {
-            // single-hand model fallback
             const dominant = (current.dominant ?? "right").toLowerCase();
-            const bestRaw =
-              dominant === "left"
-                ? leftRaw ?? rightRaw
-                : rightRaw ?? leftRaw;
-
-            if (!bestRaw) {
-              setPrediction("");
-              setScore(0);
-              return;
-            }
-
+            const bestRaw = dominant === "left" ? leftRaw ?? rightRaw : rightRaw ?? leftRaw;
+            if (!bestRaw) return;
             rawFeatures = flatten63(maybeMirrorRaw(bestRaw, mirror));
           }
 
-          void runInference(rawFeatures);
+          const res = await runInference(rawFeatures);
+          if (!res) return;
 
-          // keep your existing pose / DTW scoring (still single-hand)
-          const bestPx = (current.dominant ?? "right") === "left"
-            ? leftPx ?? rightPx
-            : rightPx ?? leftPx;
+          setPrediction(res.label);
+          setConfidence(res.conf);
 
+          // Auto-commit ONLY in static mode (fingerspelling)
+          if (current.type === "static") {
+            const win = predWindowRef.current;
+            win.push(res.label);
+            if (win.length > VOTE_WINDOW) win.shift();
+
+            const mv = majorityVote(win);
+            if (!mv) return;
+
+            const candidate = mv.label;
+            const now = performance.now();
+
+            if (res.conf < CONF_THRESH || mv.frac < VOTE_FRAC) {
+              stableLabelRef.current = "";
+              return;
+            }
+
+            if (candidate !== stableLabelRef.current) {
+              stableLabelRef.current = candidate;
+              stableSinceRef.current = now;
+              return;
+            }
+
+            const stableFor = now - stableSinceRef.current;
+            const sinceLast = now - lastCommitAtRef.current;
+
+            if (stableFor >= HOLD_MS && sinceLast >= COOLDOWN_MS) {
+              const tok = labelToToken(candidate);
+              if (tok) {
+                setDecoder((s) => commitChar(s, tok));
+                lastCommitAtRef.current = now;
+              }
+            }
+          }
+
+          // Keep your pose/DTW logic untouched (single-hand)
+          const bestPx =
+            (current.dominant ?? "right") === "left" ? leftPx ?? rightPx : rightPx ?? leftPx;
           if (!bestPx) return;
 
           const bestNorm = normalize(bestPx, { mirror });
@@ -315,12 +403,7 @@ export default function PracticePanel() {
           if (current.type === "static") {
             const ang = computeAngles(bestNorm);
             const target = current.targetPose?.angles ?? {};
-            poseScore(
-              ang,
-              target,
-              current.weights ?? {},
-              current.targetPose?.toleranceDefault ?? 12
-            );
+            poseScore(ang, target, current.weights ?? {}, current.targetPose?.toleranceDefault ?? 12);
           } else {
             const ang = computeAngles(bestNorm);
             const row = [bestNorm[0][1], ang.R_INDEX_MCP ?? 0, ang.R_MIDDLE_MCP ?? 0];
@@ -337,6 +420,7 @@ export default function PracticePanel() {
     return () => trackerRef.current?.stop();
   }, [video, mirror, current, runInference]);
 
+  // Dynamic DTW scoring
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (current.type !== "dynamic") return;
@@ -357,23 +441,12 @@ export default function PracticePanel() {
     return () => window.removeEventListener("keydown", onKey);
   }, [current]);
 
-  const expectedKey = expectedKeyFromSign(current);
-  const predKey = prediction ? labelKey(prediction) : null;
-  const isCorrect =
-    current.type === "static" && expectedKey && predKey
-      ? predKey === expectedKey
-      : null;
+  const stableLabel = stableLabelRef.current;
+  const sugg = suggestionsFor(decoder.bufferWord, vocab as string[], 6);
 
   return (
-    <div style={{ display: "grid", gap: 8 }}>
-      <div
-        style={{
-          display: "flex",
-          gap: 8,
-          alignItems: "center",
-          flexWrap: "wrap",
-        }}
-      >
+    <div style={{ display: "grid", gap: 10 }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
         <label>
           Sign:&nbsp;
           <select value={selectedId} onChange={(e) => setSelectedId(e.target.value)}>
@@ -386,28 +459,30 @@ export default function PracticePanel() {
         </label>
 
         <label>
-          <input
-            type="checkbox"
-            checked={mirror}
-            onChange={(e) => setMirror(e.target.checked)}
-          />{" "}
+          <input type="checkbox" checked={mirror} onChange={(e) => setMirror(e.target.checked)} />{" "}
           Mirror tutor view
         </label>
 
-        {current.type === "static" ? (
-          <b>Confidence: {score}%</b>
-        ) : (
-          <b>Seq Score: {seqScore ?? "-"}</b>
-        )}
+        {current.type === "static" ? <b>Confidence: {confidence}%</b> : <b>Seq Score: {seqScore ?? "-"}</b>}
 
         <span style={{ color: advice ? "#d33" : "#0a0" }}>{advice || "View OK"}</span>
 
-        <b style={{ color: "#0077cc" }}>{prediction ? `Pred: ${prediction}` : ""}</b>
-
-        {current.type === "static" && prediction && expectedKey && (
-          <b style={{ color: isCorrect ? "#18a34a" : "#dc2626" }}></b>
-        )}
+        <b style={{ color: "#0077cc" }}>
+          {prediction ? `Pred: ${prediction}` : ""}
+          {stableLabel ? ` (stable: ${stableLabel})` : ""}
+        </b>
       </div>
+
+      {/* Sentence builder works TODAY even with only alphabet labels */}
+      <SentenceBuilder
+        transcript={decoder.transcript}
+        bufferWord={decoder.bufferWord}
+        suggestions={sugg}
+        onCommitSpace={doCommitSpace}
+        onBackspace={doBackspace}
+        onClear={doClear}
+        onPickSuggestion={doPickSuggestion}
+      />
 
       <div style={{ position: "relative", width: "100%", maxWidth: 960 }}>
         <CameraFeed onReady={setVideo} />
