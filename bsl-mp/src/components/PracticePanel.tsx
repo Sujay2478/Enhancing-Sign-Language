@@ -15,6 +15,8 @@ import labels from "../data/bsl_labels.json";
 import normStats from "../data/bsl_norm.json";
 import vocab from "../data/bsl_vocab.json";
 
+import { motionEnergy } from "../logic/motion";
+
 import {
   createDecoderState,
   commitChar,
@@ -40,7 +42,7 @@ interface SignType {
   dominant?: "left" | "right";
   weights?: Record<string, number>;
   targetPose?: TargetPose;
-  template?: { sequence: number[][]; length?: number };
+  template?: { sequence: number[][]; length?: number; features?: string[] };
   tolerance?: { dtw?: number };
 }
 
@@ -153,6 +155,23 @@ function majorityVote(items: string[]): { label: string; frac: number } | null {
   return { label: best, frac: bestC / items.length };
 }
 
+// --- Dynamic template feature helpers ---
+function featureValue(feat: string, norm: Landmarks, ang: Record<string, number>): number {
+  // Landmark-derived
+  if (feat === "R_WRIST_Y") return norm[0]?.[1] ?? 0;
+  if (feat === "R_WRIST_X") return norm[0]?.[0] ?? 0;
+  if (feat === "R_WRIST_Z") return norm[0]?.[2] ?? 0;
+
+  // Angle-derived (any angle key like R_INDEX_MCP etc.)
+  if (feat in ang) return ang[feat] ?? 0;
+
+  return 0;
+}
+
+function frameFeatures(norm: Landmarks, ang: Record<string, number>, feats: string[]): number[] {
+  return feats.map((f) => featureValue(f, norm, ang));
+}
+
 export default function PracticePanel() {
   const [video, setVideo] = useState<HTMLVideoElement | null>(null);
   const trackerRef = useRef<HandTracker>();
@@ -163,6 +182,7 @@ export default function PracticePanel() {
   const [selectedId, setSelectedId] = useState<string>((signs as any)[0].id);
   const [mirror, setMirror] = useState(true);
 
+  // Static (ONNX) prediction display
   const [prediction, setPrediction] = useState<string>("");
   const [confidence, setConfidence] = useState<number>(0);
 
@@ -173,31 +193,58 @@ export default function PracticePanel() {
     [selectedId]
   );
 
-  const windowRef = useRef<number[][]>([]);
+  // Dynamic scoring display
   const [seqScore, setSeqScore] = useState<number | null>(null);
+  const [dynResult, setDynResult] = useState<{ label: string; score: number } | null>(null);
+
+  // Debug (dynamic segmentation)
+  const [dynDebug, setDynDebug] = useState<string>("");
 
   const [session, setSession] = useState<ort.InferenceSession | null>(null);
   const labelMap = useRef<string[]>(labels as string[]);
   const expectedFeatureDim = useRef<number>(126);
 
-  // Stabilisation
+  // Stabilisation (static mode)
   const predWindowRef = useRef<string[]>([]);
   const stableLabelRef = useRef<string>("");
   const stableSinceRef = useRef<number>(0);
   const lastCommitAtRef = useRef<number>(0);
 
-  // Tunables
+  // Dynamic segmentation refs
+  const dynActiveRef = useRef(false);
+  const dynIdleRef = useRef(0);
+  const dynBufRef = useRef<number[][]>([]);
+  const dynLastCommitAtRef = useRef<number>(0);
+
+  // Motion on PIXEL landmarks so translation is preserved
+  const dynPrevPxRef = useRef<Landmarks | null>(null);
+
+  // Tunables (static mode)
   const CONF_THRESH = 55;
   const VOTE_WINDOW = 10;
   const VOTE_FRAC = 0.75;
   const HOLD_MS = 550;
   const COOLDOWN_MS = 700;
 
+  // Tunables (dynamic mode) — pixel-motion-normalized scale
+  const DYN_START = 0.006; // start recording if move > this
+  const DYN_END = 0.006; // count as "still" if move < this
+  const DYN_END_FRAMES = 12; // still-frames to end
+  const DYN_MIN_FRAMES = 8; // allow short gestures to score
+  const DYN_MAX_FRAMES = 90; // safety cap
+  const DYN_COMMIT_COOLDOWN = 900; // ms
+
+  const resetDynamic = useCallback(() => {
+    dynActiveRef.current = false;
+    dynIdleRef.current = 0;
+    dynBufRef.current = [];
+    dynPrevPxRef.current = null;
+    setDynDebug("");
+  }, []);
+
   useEffect(() => {
     async function loadModel(): Promise<void> {
       try {
-        console.log("🔄 Loading ONNX model...");
-
         ort.env.wasm.wasmPaths = window.location.origin + "/ort/";
         ort.env.wasm.numThreads = 1;
         ort.env.wasm.proxy = false;
@@ -215,13 +262,6 @@ export default function PracticePanel() {
         const last = dims[dims.length - 1];
         const parsed = safeNumberDim(last);
         expectedFeatureDim.current = parsed ?? expectedFeatureDim.current;
-
-        console.log("✅ ONNX loaded:", {
-          inputName: inName,
-          dims,
-          expectedFeatureDim: expectedFeatureDim.current,
-          outputs: sess.outputNames,
-        });
 
         setSession(sess);
       } catch (err) {
@@ -247,7 +287,6 @@ export default function PracticePanel() {
 
       const results = await session.run({ [inputName]: inputTensor });
 
-      // Prefer first outputName explicitly
       const outName = session.outputNames[0];
       const outTensor = (results[outName] ?? Object.values(results)[0]) as ort.Tensor;
 
@@ -267,7 +306,6 @@ export default function PracticePanel() {
 
       const label = labelMap.current[maxIdx] ?? "Unknown";
       const conf = Math.round(maxProb * 100);
-
       return { label, conf };
     },
     [session]
@@ -291,6 +329,62 @@ export default function PracticePanel() {
     return () => window.removeEventListener("keydown", onKey);
   }, [doBackspace, doCommitSpace, current.type]);
 
+  // Finalize dynamic buffer → DTW score
+  const finalizeDynamic = useCallback(() => {
+    const buf = dynBufRef.current.slice();
+    resetDynamic();
+
+    if (current.type !== "dynamic") return;
+    const tmpl = current.template;
+    if (!tmpl?.sequence?.length) return;
+
+    if (buf.length < DYN_MIN_FRAMES) {
+      setDynResult(null);
+      setSeqScore(0);
+      return;
+    }
+
+    const targetLen = tmpl.length ?? buf.length;
+    const resampled = resample(buf, targetLen);
+
+    const cost = dtwCost(resampled, tmpl.sequence);
+    const score = dtwScore(cost, 0.15, current.tolerance?.dtw ?? 0.45);
+
+    console.log("DTW ranges:", {
+      rowMinMax: [
+        Math.min(...resampled.map(r => r[0])), Math.max(...resampled.map(r => r[0])),
+        Math.min(...resampled.map(r => r[1])), Math.max(...resampled.map(r => r[1])),
+        Math.min(...resampled.map(r => r[2])), Math.max(...resampled.map(r => r[2])),
+      ],
+      tmplMinMax: [
+        Math.min(...tmpl.sequence.map(r => r[0])), Math.max(...tmpl.sequence.map(r => r[0])),
+        Math.min(...tmpl.sequence.map(r => r[1])), Math.max(...tmpl.sequence.map(r => r[1])),
+        Math.min(...tmpl.sequence.map(r => r[2])), Math.max(...tmpl.sequence.map(r => r[2])),
+      ],
+    });
+
+    console.log("DTW debug:", {
+      bufLen: buf.length,
+      targetLen,
+      cost,
+      tol: current.tolerance?.dtw ?? 0.45,
+      score,
+      sampleResampled0: resampled[0],
+      sampleTemplate0: tmpl.sequence[0],
+    });
+
+    setSeqScore(score);
+    setDynResult({ label: current.name, score });
+
+    // Optional: commit dynamic word if score high
+    const now = performance.now();
+    if (score >= 75 && now - dynLastCommitAtRef.current >= DYN_COMMIT_COOLDOWN) {
+      const word = current.name.split("-").pop()?.trim().toLowerCase();
+      if (word) setDecoder((s) => commitSuggestion(s, word));
+      dynLastCommitAtRef.current = now;
+    }
+  }, [current, DYN_MIN_FRAMES, DYN_COMMIT_COOLDOWN, resetDynamic]);
+
   // MediaPipe loop
   useEffect(() => {
     if (!video) return;
@@ -309,6 +403,7 @@ export default function PracticePanel() {
             setConfidence(0);
             predWindowRef.current = [];
             stableLabelRef.current = "";
+            resetDynamic();
             return;
           }
 
@@ -335,11 +430,12 @@ export default function PracticePanel() {
             setConfidence(0);
             predWindowRef.current = [];
             stableLabelRef.current = "";
+            resetDynamic();
             return;
           }
           setAdvice("");
 
-          // Build feature vector (matches your CSV style: raw 0..1 landmarks)
+          // ===== ONNX inference (static classifier) =====
           let rawFeatures: number[] = [];
           if (expectedFeatureDim.current === 126) {
             const L = leftRaw ? flatten63(maybeMirrorRaw(leftRaw, mirror)) : zeros(63);
@@ -353,13 +449,15 @@ export default function PracticePanel() {
           }
 
           const res = await runInference(rawFeatures);
-          if (!res) return;
 
-          setPrediction(res.label);
-          setConfidence(res.conf);
+          // ✅ only update “Pred/Confidence” for static mode
+          if (res && current.type === "static") {
+            setPrediction(res.label);
+            setConfidence(res.conf);
+          }
 
-          // Auto-commit ONLY in static mode (fingerspelling)
-          if (current.type === "static") {
+          // ===== static auto-commit (fingerspelling) =====
+          if (res && current.type === "static") {
             const win = predWindowRef.current;
             win.push(res.label);
             if (win.length > VOTE_WINDOW) win.shift();
@@ -393,7 +491,7 @@ export default function PracticePanel() {
             }
           }
 
-          // Keep your pose/DTW logic untouched (single-hand)
+          // ===== pose + dynamic pipeline uses dominant hand =====
           const bestPx =
             (current.dominant ?? "right") === "left" ? leftPx ?? rightPx : rightPx ?? leftPx;
           if (!bestPx) return;
@@ -404,13 +502,95 @@ export default function PracticePanel() {
             const ang = computeAngles(bestNorm);
             const target = current.targetPose?.angles ?? {};
             poseScore(ang, target, current.weights ?? {}, current.targetPose?.toleranceDefault ?? 12);
-          } else {
-            const ang = computeAngles(bestNorm);
-            const row = [bestNorm[0][1], ang.R_INDEX_MCP ?? 0, ang.R_MIDDLE_MCP ?? 0];
-            const buf = windowRef.current;
-            buf.push(row);
-            if (buf.length > 60) buf.shift();
+            resetDynamic();
+            setDynResult(null);
+            return;
           }
+
+          // ===== dynamic segmentation + DTW =====
+          const ang = computeAngles(bestNorm);
+          const feats = current.template?.features ?? ["R_WRIST_Y", "R_INDEX_MCP", "R_MIDDLE_MCP"];
+          const row = frameFeatures(bestNorm, ang, feats);
+
+          // ---- DEBUG: print once per selected sign ----
+          const printedRef =
+            (window as any).__printedDyn ?? ((window as any).__printedDyn = new Set());
+
+          if (!printedRef.has(current.id)) {
+            printedRef.add(current.id);
+
+            console.log("✅ Dynamic sign:", current.id, current.name);
+            console.log("Template features:", current.template?.features);
+            console.log("Template first row:", current.template?.sequence?.[0]);
+
+            console.log("Row (computed features):", row);
+
+            const keys = Object.keys(ang);
+            console.log("Angle keys (first 40):", keys.slice(0, 40));
+            console.log(
+              "Angle sample values:",
+              keys.slice(0, 10).map((k) => [k, ang[k]])
+            );
+          }
+
+          // motion on pixels, normalized by video size
+          const prevPx = dynPrevPxRef.current;
+          const rawMovePx = prevPx ? motionEnergy(prevPx, bestPx) : 0;
+          dynPrevPxRef.current = bestPx;
+
+          const denom = Math.max(videoEl.videoWidth || 1, videoEl.videoHeight || 1);
+          const move = rawMovePx / denom;
+
+          // Segmentation:
+          // - start when move > DYN_START
+          // - while active, push frames always
+          // - reset idle when move > DYN_END, otherwise increment idle
+          // - finalize when idleFrames >= DYN_END_FRAMES
+          if (!dynActiveRef.current) {
+            if (move > DYN_START) {
+              dynActiveRef.current = true;
+              dynIdleRef.current = 0;
+              dynBufRef.current = [row]; // start fresh buffer
+              setDynResult(null);
+            }
+
+            setDynDebug(
+              `move=${move.toFixed(4)} active=${dynActiveRef.current} idle=${dynIdleRef.current} len=${dynBufRef.current.length}`
+            );
+            return;
+          }
+
+          // If active, keep recording
+          dynBufRef.current.push(row);
+
+          // ✅ ADD HERE: log frames that are actually being recorded
+          if (dynBufRef.current.length <= 40) {
+            console.log("LIVE FRAME:", dynBufRef.current.length, row);
+          }
+          if (dynBufRef.current.length === 40) {
+            console.log("✅ Captured 40 frames — stop gesture and let it finalize.");
+          }
+
+          // Count still frames (use DYN_END, not DYN_START)
+          if (move < DYN_END) dynIdleRef.current += 1;
+          else dynIdleRef.current = 0;
+
+          // End when still for long enough
+          if (dynIdleRef.current >= DYN_END_FRAMES) {
+            finalizeDynamic();
+            return;
+          }
+
+          // Safety cap (in case it never ends)
+          if (dynBufRef.current.length >= DYN_MAX_FRAMES) {
+            finalizeDynamic();
+            return;
+          }
+
+          // Debug readout (after push + idle update)
+          setDynDebug(
+            `move=${move.toFixed(4)} active=${dynActiveRef.current} idle=${dynIdleRef.current} len=${dynBufRef.current.length}`
+          );
         },
       });
 
@@ -418,31 +598,51 @@ export default function PracticePanel() {
     })();
 
     return () => trackerRef.current?.stop();
-  }, [video, mirror, current, runInference]);
+  }, [
+    video,
+    mirror,
+    current,
+    runInference,
+    resetDynamic,
+    finalizeDynamic,
+    CONF_THRESH,
+    VOTE_WINDOW,
+    VOTE_FRAC,
+    HOLD_MS,
+    COOLDOWN_MS,
+    DYN_START,
+    DYN_END,
+    DYN_END_FRAMES,
+    DYN_MAX_FRAMES,
+  ]);
 
-  // Dynamic DTW scoring
+  // Manual finalize (Space) in dynamic mode
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (current.type !== "dynamic") return;
       if (e.code === "Space") {
-        const buf = windowRef.current.slice();
-        if (buf.length < 20) return;
-        const tmpl = current.template;
-        if (!tmpl) return;
-
-        const resampled = resample(buf, tmpl.length ?? buf.length);
-        const cost = dtwCost(resampled, tmpl.sequence);
-        setSeqScore(dtwScore(cost, 0.15, current.tolerance?.dtw ?? 0.45));
-        windowRef.current = [];
+        if (dynBufRef.current.length >= DYN_MIN_FRAMES) finalizeDynamic();
       }
     };
 
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [current]);
+  }, [current, finalizeDynamic, DYN_MIN_FRAMES]);
 
   const stableLabel = stableLabelRef.current;
   const sugg = suggestionsFor(decoder.bufferWord, vocab as string[], 6);
+
+  // Header prediction:
+  // - static: ONNX label
+  // - dynamic: last DTW result (won’t be overwritten by ONNX)
+  const headerPred =
+    current.type === "dynamic"
+      ? dynResult
+        ? `${dynResult.label} (${dynResult.score}%)`
+        : dynActiveRef.current
+          ? `Recording… (${dynBufRef.current.length}f)`
+          : "—"
+      : prediction;
 
   return (
     <div style={{ display: "grid", gap: 10 }}>
@@ -463,17 +663,24 @@ export default function PracticePanel() {
           Mirror tutor view
         </label>
 
-        {current.type === "static" ? <b>Confidence: {confidence}%</b> : <b>Seq Score: {seqScore ?? "-"}</b>}
+        {current.type === "static" ? (
+          <b>Confidence: {confidence}%</b>
+        ) : (
+          <b>Seq Score: {seqScore ?? "-"}</b>
+        )}
+
+        {current.type === "dynamic" && (
+          <span style={{ color: "#999", fontFamily: "monospace" }}>{dynDebug}</span>
+        )}
 
         <span style={{ color: advice ? "#d33" : "#0a0" }}>{advice || "View OK"}</span>
 
         <b style={{ color: "#0077cc" }}>
-          {prediction ? `Pred: ${prediction}` : ""}
-          {stableLabel ? ` (stable: ${stableLabel})` : ""}
+          {headerPred ? `Pred: ${headerPred}` : ""}
+          {current.type === "static" && stableLabel ? ` (stable: ${stableLabel})` : ""}
         </b>
       </div>
 
-      {/* Sentence builder works TODAY even with only alphabet labels */}
       <SentenceBuilder
         transcript={decoder.transcript}
         bufferWord={decoder.bufferWord}
@@ -500,6 +707,8 @@ export default function PracticePanel() {
 }
 
 function resample(seq: number[][], len: number): number[][] {
+  if (len <= 1 || seq.length <= 1) return seq.slice(0, Math.max(1, len));
+
   const out: number[][] = [];
   for (let i = 0; i < len; i++) {
     const t = (i * (seq.length - 1)) / (len - 1);
