@@ -228,7 +228,7 @@ export default function PracticePanel() {
 
   // Tunables (dynamic mode) — pixel-motion-normalized scale
   const DYN_START = 0.006; // start recording if move > this
-  const DYN_END = 0.006; // count as "still" if move < this
+  const DYN_END = 0.0035; // count as "still" if move < this
   const DYN_END_FRAMES = 12; // still-frames to end
   const DYN_MIN_FRAMES = 8; // allow short gestures to score
   const DYN_MAX_FRAMES = 90; // safety cap
@@ -562,6 +562,8 @@ export default function PracticePanel() {
 
           // If active, keep recording
           dynBufRef.current.push(row);
+
+          console.log("LIVE FRAME:", dynBufRef.current.length, row);
 
           // ✅ ADD HERE: log frames that are actually being recorded
           if (dynBufRef.current.length <= 40) {
