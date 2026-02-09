@@ -156,20 +156,31 @@ function majorityVote(items: string[]): { label: string; frac: number } | null {
 }
 
 // --- Dynamic template feature helpers ---
-function featureValue(feat: string, norm: Landmarks, ang: Record<string, number>): number {
-  // Landmark-derived
-  if (feat === "R_WRIST_Y") return norm[0]?.[1] ?? 0;
-  if (feat === "R_WRIST_X") return norm[0]?.[0] ?? 0;
-  if (feat === "R_WRIST_Z") return norm[0]?.[2] ?? 0;
+function featureValue(
+  feat: string,
+  norm: Landmarks,
+  ang: Record<string, number>,
+  px: Landmarks
+): number {
 
-  // Angle-derived (any angle key like R_INDEX_MCP etc.)
+  // PIXEL motion features
+  if (feat === "R_WRIST_X") return px[0]?.[0] ?? 0;
+  if (feat === "R_WRIST_Y") return px[0]?.[1] ?? 0;
+  if (feat === "R_WRIST_Z") return px[0]?.[2] ?? 0;
+
+  // Normalized angle features
   if (feat in ang) return ang[feat] ?? 0;
 
   return 0;
 }
 
-function frameFeatures(norm: Landmarks, ang: Record<string, number>, feats: string[]): number[] {
-  return feats.map((f) => featureValue(f, norm, ang));
+function frameFeatures(
+  norm: Landmarks,
+  ang: Record<string, number>,
+  feats: string[],
+  px: Landmarks
+): number[] {
+  return feats.map(f => featureValue(f, norm, ang, px));
 }
 
 export default function PracticePanel() {
@@ -347,8 +358,13 @@ export default function PracticePanel() {
     const targetLen = tmpl.length ?? buf.length;
     const resampled = resample(buf, targetLen);
 
+    if (current.id === "bsl_hello") {
+      console.log("📦 COPY THIS TEMPLATE:");
+      console.log(JSON.stringify(resampled));
+    }
+
     const cost = dtwCost(resampled, tmpl.sequence);
-    const score = dtwScore(cost, 0.15, current.tolerance?.dtw ?? 0.45);
+    const score = dtwScore(cost, 0.4, 1.2);
 
     console.log("DTW ranges:", {
       rowMinMax: [
@@ -510,7 +526,7 @@ export default function PracticePanel() {
           // ===== dynamic segmentation + DTW =====
           const ang = computeAngles(bestNorm);
           const feats = current.template?.features ?? ["R_WRIST_Y", "R_INDEX_MCP", "R_MIDDLE_MCP"];
-          const row = frameFeatures(bestNorm, ang, feats);
+          const row = frameFeatures(bestNorm, ang, feats, bestPx);
 
           // ---- DEBUG: print once per selected sign ----
           const printedRef =

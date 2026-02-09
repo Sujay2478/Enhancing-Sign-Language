@@ -30,19 +30,42 @@ function groupFromJoint(j: string) {
   return "OTHERS";
 }
 
+function zNormalizeSeq(seq: number[][]): number[][] {
+  const d = seq[0]?.length ?? 0;
+  if (!d) return seq;
+
+  const mean = Array(d).fill(0);
+  const std = Array(d).fill(0);
+
+  for (const row of seq) for (let i = 0; i < d; i++) mean[i] += row[i];
+  for (let i = 0; i < d; i++) mean[i] /= seq.length;
+
+  for (const row of seq) for (let i = 0; i < d; i++) std[i] += (row[i] - mean[i]) ** 2;
+  for (let i = 0; i < d; i++) std[i] = Math.sqrt(std[i] / seq.length) || 1;
+
+  return seq.map((row) => row.map((v, i) => (v - mean[i]) / std[i]));
+}
+
 // === Simple DTW for dynamic signs over feature vectors ===
 export function dtwCost(seqA: number[][], seqB: number[][]): number {
-  const n = seqA.length, m = seqB.length;
+  const A = zNormalizeSeq(seqA);
+  const B = zNormalizeSeq(seqB);
+
+  const n = A.length, m = B.length;
   const dp = Array.from({ length: n + 1 }, () => Array(m + 1).fill(Infinity));
+
   const dist = (a: number[], b: number[]) =>
     Math.sqrt(a.reduce((s, ai, i) => s + (ai - b[i]) ** 2, 0));
+
   dp[0][0] = 0;
+
   for (let i = 1; i <= n; i++) {
     for (let j = 1; j <= m; j++) {
-      const cost = dist(seqA[i - 1], seqB[j - 1]);
+      const cost = dist(A[i - 1], B[j - 1]);
       dp[i][j] = cost + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
     }
   }
+
   return dp[n][m] / (n + m);
 }
 
