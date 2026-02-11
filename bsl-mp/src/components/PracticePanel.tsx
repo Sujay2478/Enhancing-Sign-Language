@@ -183,6 +183,55 @@ function frameFeatures(
   return feats.map(f => featureValue(f, norm, ang, px));
 }
 
+// ===== TWO-HAND helpers =====
+function padTo21(lms: Landmarks | null): Landmarks {
+  if (!lms) return Array.from({ length: 21 }, () => [0, 0, 0]) as Landmarks;
+  return lms;
+}
+
+// computeAngles() returns keys like R_INDEX_MCP etc.
+// For the LEFT hand we compute angles separately, but we still treat them as "L_*" in templates.
+// We'll map L_* -> the same base key used by computeAngles (R_*).
+function featureValue2H(
+  feat: string,
+  leftNorm: Landmarks,
+  rightNorm: Landmarks,
+  angL: Record<string, number>,
+  angR: Record<string, number>,
+  leftPx: Landmarks,
+  rightPx: Landmarks
+): number {
+  // Pixel wrist features
+  if (feat === "L_WRIST_X") return leftPx[0]?.[0] ?? 0;
+  if (feat === "L_WRIST_Y") return leftPx[0]?.[1] ?? 0;
+  if (feat === "L_WRIST_Z") return leftPx[0]?.[2] ?? 0;
+
+  if (feat === "R_WRIST_X") return rightPx[0]?.[0] ?? 0;
+  if (feat === "R_WRIST_Y") return rightPx[0]?.[1] ?? 0;
+  if (feat === "R_WRIST_Z") return rightPx[0]?.[2] ?? 0;
+
+  // Angle features
+  if (feat.startsWith("L_")) {
+    const k = feat.replace("L_", "R_"); // map to computeAngles keyspace
+    return angL[k] ?? 0;
+  }
+  if (feat.startsWith("R_")) return angR[feat] ?? 0;
+
+  return 0;
+}
+
+function frameFeatures2H(
+  feats: string[],
+  leftNorm: Landmarks,
+  rightNorm: Landmarks,
+  angL: Record<string, number>,
+  angR: Record<string, number>,
+  leftPx: Landmarks,
+  rightPx: Landmarks
+): number[] {
+  return feats.map((f) => featureValue2H(f, leftNorm, rightNorm, angL, angR, leftPx, rightPx));
+}
+
 export default function PracticePanel() {
   const [video, setVideo] = useState<HTMLVideoElement | null>(null);
   const trackerRef = useRef<HandTracker>();
@@ -358,7 +407,7 @@ export default function PracticePanel() {
     const targetLen = tmpl.length ?? buf.length;
     const resampled = resample(buf, targetLen);
 
-    if (current.id === "bsl_hello") {
+    if (current.id === "bsl_hello" || current.id === "bsl_how_are_you") {
       console.log("📦 COPY THIS TEMPLATE:");
       console.log(JSON.stringify(resampled));
     }
@@ -524,9 +573,44 @@ export default function PracticePanel() {
           }
 
           // ===== dynamic segmentation + DTW =====
-          const ang = computeAngles(bestNorm);
-          const feats = current.template?.features ?? ["R_WRIST_Y", "R_INDEX_MCP", "R_MIDDLE_MCP"];
-          const row = frameFeatures(bestNorm, ang, feats, bestPx);
+          const isTwoHand = current.hands === "two";
+
+          let row: number[] = [];
+          let motionPx: Landmarks | null = null;
+
+          // ONE-hand dynamic (your existing behavior)
+          if (!isTwoHand) {
+            const bestPx =
+              (current.dominant ?? "right") === "left" ? leftPx ?? rightPx : rightPx ?? leftPx;
+            if (!bestPx) return;
+
+            const bestNorm = normalize(bestPx, { mirror });
+            const ang = computeAngles(bestNorm);
+
+            const feats = current.template?.features ?? ["R_WRIST_Y", "R_INDEX_MCP", "R_MIDDLE_MCP"];
+            row = frameFeatures(bestNorm, ang, feats, bestPx);
+
+            motionPx = bestPx;
+          } else {
+            // TWO-hand dynamic
+            const LPx = padTo21(leftPx);
+            const RPx = padTo21(rightPx);
+
+            const LNorm = normalize(LPx, { mirror });
+            const RNorm = normalize(RPx, { mirror });
+
+            const angL = computeAngles(LNorm);
+            const angR = computeAngles(RNorm);
+
+            const feats =
+              current.template?.features ??
+              ["L_INDEX_MCP", "L_MIDDLE_MCP", "R_INDEX_MCP", "R_MIDDLE_MCP"];
+
+            row = frameFeatures2H(feats, LNorm, RNorm, angL, angR, LPx, RPx);
+
+            // for segmentation motion, just use right hand (simple & stable)
+            motionPx = RPx;
+          }
 
           // ---- DEBUG: print once per selected sign ----
           const printedRef =
@@ -551,8 +635,8 @@ export default function PracticePanel() {
 
           // motion on pixels, normalized by video size
           const prevPx = dynPrevPxRef.current;
-          const rawMovePx = prevPx ? motionEnergy(prevPx, bestPx) : 0;
-          dynPrevPxRef.current = bestPx;
+          const rawMovePx = prevPx && motionPx ? motionEnergy(prevPx, motionPx) : 0;
+          dynPrevPxRef.current = motionPx;
 
           const denom = Math.max(videoEl.videoWidth || 1, videoEl.videoHeight || 1);
           const move = rawMovePx / denom;
