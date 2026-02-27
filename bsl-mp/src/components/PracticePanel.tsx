@@ -407,7 +407,7 @@ export default function PracticePanel() {
     const targetLen = tmpl.length ?? buf.length;
     const resampled = resample(buf, targetLen);
 
-    if (current.id === "bsl_hello" || current.id === "bsl_how_are_you") {
+    if (current.id === "bsl_hello" || current.id === "bsl_how_are_you" || "bsl_help") {
       console.log("📦 COPY THIS TEMPLATE:");
       console.log(JSON.stringify(resampled));
     }
