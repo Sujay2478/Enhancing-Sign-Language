@@ -1,6 +1,5 @@
 import type { AngleMap } from "./types";
 
-// Weighted mean absolute error → 0..100 score
 export function poseScore(
   current: AngleMap,
   target: AngleMap,
@@ -10,10 +9,10 @@ export function poseScore(
   let totW = 0, acc = 0;
   const perJoint: Record<string, number> = {};
   for (const j of Object.keys(target)) {
-    const group = groupFromJoint(j); // e.g., "INDEX", "THUMB"
+    const group = groupFromJoint(j);
     const w = weights[group] ?? weights["OTHERS"] ?? 1;
     const err = Math.abs((current[j] ?? 0) - target[j]);
-    const js = Math.max(0, 1 - err / toleranceDeg); // 0..1
+    const js = Math.max(0, 1 - err / toleranceDeg);
     perJoint[j] = js;
     totW += w; acc += w * js;
   }
@@ -46,7 +45,6 @@ function zNormalizeSeq(seq: number[][]): number[][] {
   return seq.map((row) => row.map((v, i) => (v - mean[i]) / std[i]));
 }
 
-// === Simple DTW for dynamic signs over feature vectors ===
 export function dtwCost(seqA: number[][], seqB: number[][]): number {
   const A = zNormalizeSeq(seqA);
   const B = zNormalizeSeq(seqB);

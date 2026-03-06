@@ -155,7 +155,6 @@ function majorityVote(items: string[]): { label: string; frac: number } | null {
   return { label: best, frac: bestC / items.length };
 }
 
-// --- Dynamic template feature helpers ---
 function featureValue(
   feat: string,
   norm: Landmarks,
@@ -163,12 +162,10 @@ function featureValue(
   px: Landmarks
 ): number {
 
-  // PIXEL motion features
   if (feat === "R_WRIST_X") return px[0]?.[0] ?? 0;
   if (feat === "R_WRIST_Y") return px[0]?.[1] ?? 0;
   if (feat === "R_WRIST_Z") return px[0]?.[2] ?? 0;
 
-  // Normalized angle features
   if (feat in ang) return ang[feat] ?? 0;
 
   return 0;
@@ -183,15 +180,11 @@ function frameFeatures(
   return feats.map(f => featureValue(f, norm, ang, px));
 }
 
-// ===== TWO-HAND helpers =====
 function padTo21(lms: Landmarks | null): Landmarks {
   if (!lms) return Array.from({ length: 21 }, () => [0, 0, 0]) as Landmarks;
   return lms;
 }
 
-// computeAngles() returns keys like R_INDEX_MCP etc.
-// For the LEFT hand we compute angles separately, but we still treat them as "L_*" in templates.
-// We'll map L_* -> the same base key used by computeAngles (R_*).
 function featureValue2H(
   feat: string,
   leftNorm: Landmarks,
@@ -212,7 +205,7 @@ function featureValue2H(
 
   // Angle features
   if (feat.startsWith("L_")) {
-    const k = feat.replace("L_", "R_"); // map to computeAngles keyspace
+    const k = feat.replace("L_", "R_");
     return angL[k] ?? 0;
   }
   if (feat.startsWith("R_")) return angR[feat] ?? 0;
@@ -253,46 +246,39 @@ export default function PracticePanel() {
     [selectedId]
   );
 
-  // Dynamic scoring display
   const [seqScore, setSeqScore] = useState<number | null>(null);
   const [dynResult, setDynResult] = useState<{ label: string; score: number } | null>(null);
 
-  // Debug (dynamic segmentation)
   const [dynDebug, setDynDebug] = useState<string>("");
 
   const [session, setSession] = useState<ort.InferenceSession | null>(null);
   const labelMap = useRef<string[]>(labels as string[]);
   const expectedFeatureDim = useRef<number>(126);
 
-  // Stabilisation (static mode)
   const predWindowRef = useRef<string[]>([]);
   const stableLabelRef = useRef<string>("");
   const stableSinceRef = useRef<number>(0);
   const lastCommitAtRef = useRef<number>(0);
 
-  // Dynamic segmentation refs
   const dynActiveRef = useRef(false);
   const dynIdleRef = useRef(0);
   const dynBufRef = useRef<number[][]>([]);
   const dynLastCommitAtRef = useRef<number>(0);
 
-  // Motion on PIXEL landmarks so translation is preserved
   const dynPrevPxRef = useRef<Landmarks | null>(null);
 
-  // Tunables (static mode)
   const CONF_THRESH = 55;
   const VOTE_WINDOW = 10;
   const VOTE_FRAC = 0.75;
   const HOLD_MS = 550;
   const COOLDOWN_MS = 700;
 
-  // Tunables (dynamic mode) — pixel-motion-normalized scale
-  const DYN_START = 0.006; // start recording if move > this
-  const DYN_END = 0.0035; // count as "still" if move < this
-  const DYN_END_FRAMES = 12; // still-frames to end
-  const DYN_MIN_FRAMES = 8; // allow short gestures to score
-  const DYN_MAX_FRAMES = 90; // safety cap
-  const DYN_COMMIT_COOLDOWN = 900; // ms
+  const DYN_START = 0.006;
+  const DYN_END = 0.0035;
+  const DYN_END_FRAMES = 12;
+  const DYN_MIN_FRAMES = 8;
+  const DYN_MAX_FRAMES = 90;
+  const DYN_COMMIT_COOLDOWN = 900;
 
   const resetDynamic = useCallback(() => {
     dynActiveRef.current = false;
@@ -441,7 +427,6 @@ export default function PracticePanel() {
     setSeqScore(score);
     setDynResult({ label: current.name, score });
 
-    // Optional: commit dynamic word if score high
     const now = performance.now();
     if (score >= 75 && now - dynLastCommitAtRef.current >= DYN_COMMIT_COOLDOWN) {
       const word = current.name.split("-").pop()?.trim().toLowerCase();
@@ -450,7 +435,6 @@ export default function PracticePanel() {
     }
   }, [current, DYN_MIN_FRAMES, DYN_COMMIT_COOLDOWN, resetDynamic]);
 
-  // MediaPipe loop
   useEffect(() => {
     if (!video) return;
 
@@ -500,7 +484,6 @@ export default function PracticePanel() {
           }
           setAdvice("");
 
-          // ===== ONNX inference (static classifier) =====
           let rawFeatures: number[] = [];
           if (expectedFeatureDim.current === 126) {
             const L = leftRaw ? flatten63(maybeMirrorRaw(leftRaw, mirror)) : zeros(63);
@@ -515,13 +498,11 @@ export default function PracticePanel() {
 
           const res = await runInference(rawFeatures);
 
-          // ✅ only update “Pred/Confidence” for static mode
           if (res && current.type === "static") {
             setPrediction(res.label);
             setConfidence(res.conf);
           }
 
-          // ===== static auto-commit (fingerspelling) =====
           if (res && current.type === "static") {
             const win = predWindowRef.current;
             win.push(res.label);
@@ -556,7 +537,6 @@ export default function PracticePanel() {
             }
           }
 
-          // ===== pose + dynamic pipeline uses dominant hand =====
           const bestPx =
             (current.dominant ?? "right") === "left" ? leftPx ?? rightPx : rightPx ?? leftPx;
           if (!bestPx) return;
@@ -572,13 +552,11 @@ export default function PracticePanel() {
             return;
           }
 
-          // ===== dynamic segmentation + DTW =====
           const isTwoHand = current.hands === "two";
 
           let row: number[] = [];
           let motionPx: Landmarks | null = null;
 
-          // ONE-hand dynamic (your existing behavior)
           if (!isTwoHand) {
             const bestPx =
               (current.dominant ?? "right") === "left" ? leftPx ?? rightPx : rightPx ?? leftPx;
@@ -608,18 +586,16 @@ export default function PracticePanel() {
 
             row = frameFeatures2H(feats, LNorm, RNorm, angL, angR, LPx, RPx);
 
-            // for segmentation motion, just use right hand (simple & stable)
             motionPx = RPx;
           }
 
-          // ---- DEBUG: print once per selected sign ----
           const printedRef =
             (window as any).__printedDyn ?? ((window as any).__printedDyn = new Set());
 
           if (!printedRef.has(current.id)) {
             printedRef.add(current.id);
 
-            console.log("✅ Dynamic sign:", current.id, current.name);
+            console.log("Dynamic sign:", current.id, current.name);
             console.log("Template features:", current.template?.features);
             console.log("Template first row:", current.template?.sequence?.[0]);
 
@@ -633,7 +609,6 @@ export default function PracticePanel() {
             );
           }
 
-          // motion on pixels, normalized by video size
           const prevPx = dynPrevPxRef.current;
           const rawMovePx = prevPx && motionPx ? motionEnergy(prevPx, motionPx) : 0;
           dynPrevPxRef.current = motionPx;
@@ -641,16 +616,11 @@ export default function PracticePanel() {
           const denom = Math.max(videoEl.videoWidth || 1, videoEl.videoHeight || 1);
           const move = rawMovePx / denom;
 
-          // Segmentation:
-          // - start when move > DYN_START
-          // - while active, push frames always
-          // - reset idle when move > DYN_END, otherwise increment idle
-          // - finalize when idleFrames >= DYN_END_FRAMES
           if (!dynActiveRef.current) {
             if (move > DYN_START) {
               dynActiveRef.current = true;
               dynIdleRef.current = 0;
-              dynBufRef.current = [row]; // start fresh buffer
+              dynBufRef.current = [row];
               setDynResult(null);
             }
 
@@ -660,12 +630,10 @@ export default function PracticePanel() {
             return;
           }
 
-          // If active, keep recording
           dynBufRef.current.push(row);
 
           console.log("LIVE FRAME:", dynBufRef.current.length, row);
 
-          // ✅ ADD HERE: log frames that are actually being recorded
           if (dynBufRef.current.length <= 40) {
             console.log("LIVE FRAME:", dynBufRef.current.length, row);
           }
@@ -673,23 +641,19 @@ export default function PracticePanel() {
             console.log("✅ Captured 40 frames — stop gesture and let it finalize.");
           }
 
-          // Count still frames (use DYN_END, not DYN_START)
           if (move < DYN_END) dynIdleRef.current += 1;
           else dynIdleRef.current = 0;
 
-          // End when still for long enough
           if (dynIdleRef.current >= DYN_END_FRAMES) {
             finalizeDynamic();
             return;
           }
 
-          // Safety cap (in case it never ends)
           if (dynBufRef.current.length >= DYN_MAX_FRAMES) {
             finalizeDynamic();
             return;
           }
 
-          // Debug readout (after push + idle update)
           setDynDebug(
             `move=${move.toFixed(4)} active=${dynActiveRef.current} idle=${dynIdleRef.current} len=${dynBufRef.current.length}`
           );
@@ -718,7 +682,6 @@ export default function PracticePanel() {
     DYN_MAX_FRAMES,
   ]);
 
-  // Manual finalize (Space) in dynamic mode
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (current.type !== "dynamic") return;
@@ -734,9 +697,6 @@ export default function PracticePanel() {
   const stableLabel = stableLabelRef.current;
   const sugg = suggestionsFor(decoder.bufferWord, vocab as string[], 6);
 
-  // Header prediction:
-  // - static: ONNX label
-  // - dynamic: last DTW result (won’t be overwritten by ONNX)
   const headerPred =
     current.type === "dynamic"
       ? dynResult

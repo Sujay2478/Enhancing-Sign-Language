@@ -7,20 +7,16 @@ export function viewGate(
   video: HTMLVideoElement
 ): ViewGate {
   if (!pxLms?.length) return { ok: false, advice: "Show your hand to the camera" };
-  // Distance proxy: bbox height
+
   const ys = pxLms.map((p) => p[1]);
   const minY = Math.min(...ys), maxY = Math.max(...ys);
   const bboxH = maxY - minY;
   if (bboxH < video.videoHeight * 0.15) {
     return { ok: false, advice: "Move closer to the camera" };
   }
-  // Angle proxy: palm plane (thumb CMC ~1, pinky MCP ~17, wrist 0)
   const n = palmNormal(pxLms[1], pxLms[17], pxLms[0]);
-  const facing = Math.abs(n[2]); // Z component ~ facing camera
+  const facing = Math.abs(n[2]);
   if (facing < 0.5) return { ok: false, advice: "Rotate your palm towards the camera" };
-
-  // Lighting proxy: quick luma estimate via bbox area (rough)
-  // (Optional) Keep simple for MVP — can be added later
 
   return { ok: true };
 }

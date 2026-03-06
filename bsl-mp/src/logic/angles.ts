@@ -1,6 +1,5 @@
 import type { Landmarks, Vec3, AngleMap } from "./types";
 
-// Compute angle at joint B between AB and CB
 function angle(a: Vec3, b: Vec3, c: Vec3): number {
   const ab: Vec3 = [a[0]-b[0], a[1]-b[1], a[2]-b[2]];
   const cb: Vec3 = [c[0]-b[0], c[1]-b[1], c[2]-b[2]];

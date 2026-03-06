@@ -25,8 +25,6 @@ EPOCHS = 50
 LR = 1e-3
 SEED = 42
 
-# We will train a single model that expects 2-hand input always:
-# one-hand samples will be padded with zeros for the missing hand.
 INPUT_DIM = 126
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -110,14 +108,11 @@ def augment_features(
     """
     out = x.copy()
 
-    # global scale
     s = np.random.uniform(scale_range[0], scale_range[1])
     out *= s
 
-    # gaussian jitter
     out += np.random.normal(0.0, noise_std, size=out.shape).astype(np.float32)
 
-    # optional random feature dropout (rarely needed; keep small if used)
     if drop_prob > 0:
         mask = (np.random.rand(out.shape[0]) > drop_prob).astype(np.float32)
         out *= mask
@@ -147,11 +142,9 @@ class BSLDataset(Dataset):
     def __getitem__(self, idx):
         x = self.X[idx]
 
-        # normalize with train stats
         if self.norm is not None:
             x = (x - self.norm.mean) / self.norm.std
 
-        # augmentation only for train
         if self.augment:
             x = augment_features(
                 x,
@@ -311,20 +304,20 @@ def main():
         },
         os.path.join("models", "bsl_sign_model.pth"),
     )
-    print("✅ Model saved to models/bsl_sign_model.pth")
+    print("Model saved to models/bsl_sign_model.pth")
 
     # ---------- save labels json for frontend ----------
     labels_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data", "bsl_labels.json"))
     os.makedirs(os.path.dirname(labels_path), exist_ok=True)
     with open(labels_path, "w", encoding="utf-8") as f:
         json.dump(encoder.classes_.tolist(), f, ensure_ascii=False, indent=2)
-    print(f"✅ Label map saved to {labels_path}")
+    print(f"Label map saved to {labels_path}")
 
     # ---------- save normalization json for frontend (optional but recommended) ----------
     norm_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data", "bsl_norm.json"))
     with open(norm_path, "w", encoding="utf-8") as f:
         json.dump(norm.to_jsonable(), f, ensure_ascii=False, indent=2)
-    print(f"✅ Normalization stats saved to {norm_path}")
+    print(f"Normalization stats saved to {norm_path}")
 
     # ---------- export to ONNX (browser-safe) ----------
     try:
@@ -336,13 +329,11 @@ def main():
         model_cpu = model.to("cpu").eval()
         dummy_input = Variable(torch.randn(1, INPUT_DIM, dtype=torch.float32))
 
-        # NOTE: adjust this path if your vite project root differs.
         onnx_path = os.path.abspath(
             os.path.join(os.path.dirname(__file__), "../../public/models/bsl_sign_model.onnx")
         )
         os.makedirs(os.path.dirname(onnx_path), exist_ok=True)
 
-        # remove old external data file if present
         if os.path.exists(onnx_path + ".data"):
             os.remove(onnx_path + ".data")
 
@@ -357,22 +348,19 @@ def main():
             output_names=["output"],
             dynamic_axes=None,
             verbose=False,
-            # If your torch supports it, this prevents the .onnx.data split:
-            # use_external_data_format=False,
         )
 
-        # force IR version compatible with onnxruntime-web
         model_proto = onnx.load(onnx_path)
         model_proto.ir_version = 9
         onnx.save(model_proto, onnx_path)
 
         file_size = os.path.getsize(onnx_path)
-        print(f"✅ ONNX export succeeded: {onnx_path}")
-        print(f"📦 File size: {file_size / 1024:.2f} KB")
-        print("✅ Ready for onnxruntime-web!")
+        print(f"ONNX export succeeded: {onnx_path}")
+        print(f"File size: {file_size / 1024:.2f} KB")
+        print("Ready for onnxruntime-web!")
 
     except Exception:
-        print("❌ ONNX export failed:")
+        print("ONNX export failed:")
         traceback.print_exc()
 
 

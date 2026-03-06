@@ -7,7 +7,6 @@ export function toPixels(lms: Landmarks, video: HTMLVideoElement): Landmarks {
   return lms.map(([x, y, z]) => [x * w, y * h, z * Math.max(w, h)]);
 }
 
-// --- Existing single-hand normalize (kept) ---
 export function normalize(lms: Landmarks, opts: { mirror?: boolean } = {}): Landmarks {
   const w0 = lms[0];
   const midMCP = lms[9];
@@ -26,9 +25,6 @@ export function normalize(lms: Landmarks, opts: { mirror?: boolean } = {}): Land
   return out;
 }
 
-// -------------------- NEW: helpers --------------------
-
-// 21 * 3 = 63
 export function zerosHand(): number[] {
   return new Array(63).fill(0);
 }
@@ -37,12 +33,10 @@ export function flattenLandmarks(norm: Landmarks): number[] {
   return norm.flatMap((p) => [p[0], p[1], p[2]]);
 }
 
-// ✅ Apply training-time z-score normalization
 export function standardize(features: number[]): number[] {
   const mean = (normStats as any).mean as number[];
   const std = (normStats as any).std as number[];
 
-  // If stats don't match, don't silently corrupt inputs.
   if (!mean || !std || mean.length !== features.length || std.length !== features.length) {
     console.warn(
       `⚠️ standardize(): stats length mismatch. features=${features.length}, mean=${mean?.length}, std=${std?.length}`
@@ -69,8 +63,8 @@ export function normalizeTwoHands(
 ): number[] {
   const leftNorm = leftPx ? flattenLandmarks(normalize(leftPx, opts)) : zerosHand();
   const rightNorm = rightPx ? flattenLandmarks(normalize(rightPx, opts)) : zerosHand();
-  const features = [...leftNorm, ...rightNorm]; // 126
-  return standardize(features); // ✅ critical
+  const features = [...leftNorm, ...rightNorm];
+  return standardize(features);
 }
 
 export type { Vec3, Landmarks } from "./types";
