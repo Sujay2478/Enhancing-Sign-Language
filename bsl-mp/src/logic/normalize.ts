@@ -1,5 +1,5 @@
 import type { Vec3, Landmarks } from "./types";
-import normStats from "../data/bsl_norm.json"; // ✅ add this JSON file under src/data/
+import normStats from "../data/bsl_norm.json";
 
 export function toPixels(lms: Landmarks, video: HTMLVideoElement): Landmarks {
   const w = video.videoWidth;

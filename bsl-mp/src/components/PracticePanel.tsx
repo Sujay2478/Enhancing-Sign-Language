@@ -311,7 +311,7 @@ export default function PracticePanel() {
 
         setSession(sess);
       } catch (err) {
-        console.error("❌ Failed to load ONNX model:", err);
+        console.error("Failed to load ONNX model:", err);
       }
     }
 
@@ -638,7 +638,7 @@ export default function PracticePanel() {
             console.log("LIVE FRAME:", dynBufRef.current.length, row);
           }
           if (dynBufRef.current.length === 40) {
-            console.log("✅ Captured 40 frames — stop gesture and let it finalize.");
+            console.log("Captured 40 frames — stop gesture and let it finalize.");
           }
 
           if (move < DYN_END) dynIdleRef.current += 1;

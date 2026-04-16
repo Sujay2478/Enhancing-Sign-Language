@@ -1,7 +1,6 @@
-// src/logic/sentenceDecoder.ts
 export type DecoderState = {
-  transcript: string;   // committed words + spaces
-  bufferWord: string;   // currently building word (letters/digits)
+  transcript: string;
+  bufferWord: string;
 };
 
 export function createDecoderState(): DecoderState {
