@@ -1,4 +1,4 @@
-# 🤟 Enhancing Sign Language Learning with MediaPipe & Deep Learning
+# Enhancing Sign Language Learning with MediaPipe & Deep Learning
 
 A browser-based **British Sign Language (BSL) learning system** that combines real-time computer vision, deep learning, and interactive feedback to help users practise and improve sign language gestures.
 
@@ -8,7 +8,7 @@ The project was developed as an accessible approach to independent BSL learning,
 
 ---
 
-## ✨ Key Features
+## Key Features
 
 * **Real-time hand tracking** using MediaPipe Hands
 * Support for **single-hand and two-hand BSL signs**
@@ -98,7 +98,7 @@ This enables support for dynamic gestures such as:
 
 ---
 
-## 🎯 Real-Time Learning Feedback
+## Real-Time Learning Feedback
 
 Recognition is only one part of the project. The system is designed as an interactive learning tool rather than simply a sign classifier.
 
@@ -118,7 +118,7 @@ The project evaluation specifically used gesture recognition, confidence scores,
 
 ---
 
-## 🖼️ Application Preview
+## Application Preview
 
 ![Picture1.png](bsl-mp%2Fpublic%2FImages%2FPicture1.png) 
 
@@ -128,7 +128,7 @@ The project evaluation specifically used gesture recognition, confidence scores,
 
 ---
 
-## 🏗️ System Architecture
+## System Architecture
 
 ![System Architecture](bsl-mp%2Fpublic%2FImages%2FPicture4.png)
 
