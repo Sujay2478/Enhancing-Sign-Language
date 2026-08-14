@@ -1,4 +1,4 @@
-# Enhancing Sign Language Learning with MediaPipe & Deep Learning
+# Enhancing Sign Language Learning Through Augmented Reality Feedback
 
 A browser-based **British Sign Language (BSL) learning system** that combines real-time computer vision, deep learning, and interactive feedback to help users practise and improve sign language gestures.
 
