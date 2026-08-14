@@ -41,3 +41,21 @@ This project supports:
 - Confidence percentage
 - Correct / Incorrect indicator
 - View gating for camera positioning
+
+---
+
+### Visuals
+
+![Picture1.png](bsl-mp%2Fpublic%2FImages%2FPicture1.png)
+
+![Picture2.png](bsl-mp%2Fpublic%2FImages%2FPicture2.png)
+
+![Picture3.png](bsl-mp%2Fpublic%2FImages%2FPicture3.png)
+
+---
+
+### System Architecture
+
+![Picture4.png](bsl-mp%2Fpublic%2FImages%2FPicture4.png)
+
+
